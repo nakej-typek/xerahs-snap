@@ -8,5 +8,10 @@ for _, combo in ipairs({ "ALT + code:39", "ALT + SHIFT + code:39", "ALT + code:4
   hl.bind(combo, hl.dsp.no_op())
 end
 
+-- slurp's selection layer (with the magnifier) must vanish at once, or its fade-out ends up in
+-- the screenshot grim takes right after; the freeze (hyprpicker) should not fade either.
+hl.layer_rule({ name = "xerahs-capture-no-anim", match = { namespace = "^(selection|hyprpicker)$" }, no_anim = true })
+
 -- Classic hyprland.conf equivalent (one line per hotkey):
 --   bind = ALT, code:39, exec, true
+--   layerrule = noanim, ^(selection|hyprpicker)$

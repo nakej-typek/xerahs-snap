@@ -3,6 +3,16 @@
 # put on screen (hyprpicker -r -z), so the screenshot shows the moment Alt+S was pressed.
 FREEZE_PID=${XDG_RUNTIME_DIR:-/tmp}/xerahs-freeze.pid
 
+# XerahS runs grim right after slurp exits; wait until slurp's layer (dim, border, magnifier)
+# is really gone, plus one frame, or it shows up in the screenshot.
+if [[ -n $HYPRLAND_INSTANCE_SIGNATURE ]] && command -v hyprctl >/dev/null; then
+  for _ in {1..25}; do
+    hyprctl -j layers 2>/dev/null | grep -q '"namespace": *"selection"' || break
+    sleep 0.02
+  done
+  sleep 0.02
+fi
+
 /usr/bin/grim "$@"
 rc=$?
 if [[ -f $FREEZE_PID ]]; then
