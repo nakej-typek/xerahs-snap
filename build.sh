@@ -17,7 +17,7 @@ install -Dm755 "$WORK/ui-rects" "$HOME/.local/lib/xerahs-snap/ui-rects"
 echo "installed ui-rects -> ~/.local/lib/xerahs-snap/ui-rects"
 
 git clone -q --depth 1 --branch "$VERSION" https://github.com/emersion/slurp "$WORK/slurp" 2>/dev/null
-for p in dashed-border click-threshold loupe; do
+for p in dashed-border click-threshold loupe right-click-cancel; do
   git -C "$WORK/slurp" apply "$HERE/patches/slurp-$p.patch"
 done
 meson setup "$WORK/slurp/build" "$WORK/slurp" --buildtype=release >/dev/null
