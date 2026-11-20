@@ -1,0 +1,44 @@
+diff --git a/include/slurp.h b/include/slurp.h
+index 5c5153c..b2f90f3 100644
+--- a/include/slurp.h
++++ b/include/slurp.h
+@@ -62,6 +62,7 @@ struct slurp_state {
+ 	int loupe_pixels; // odd number of screen pixels across the loupe at that zoom
+ 	double loupe_scroll; // accumulated scroll (touchpads send small steps)
+ 	bool display_dimensions;
++	bool edit_requested; // the selection was taken with E (format %e prints 1)
+ 	bool single_point;
+ 	bool restrict_selection;
+ 	struct wl_list boxes; // slurp_box::link
+diff --git a/main.c b/main.c
+index d32806f..9f62b37 100644
+--- a/main.c
++++ b/main.c
+@@ -416,6 +416,17 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+ 	switch (key_state) {
+ 	case WL_KEYBOARD_KEY_STATE_PRESSED:
+ 		switch (keysym) {
++		case XKB_KEY_e:
++		case XKB_KEY_E:
++			// Take the box under the cursor like a click, and tell the caller (format %e)
++			// that the user wants to edit the capture.
++			if (seat->pointer_selection.has_selection && !state->single_point &&
++					seat->button_state != WL_POINTER_BUTTON_STATE_PRESSED) {
++				state->result = seat->pointer_selection.selection;
++				state->edit_requested = true;
++				state->running = false;
++			}
++			break;
+ 		case XKB_KEY_Escape:
+ 			seat->pointer_selection.has_selection = false;
+ 			seat->touch_selection.has_selection = false;
+@@ -887,6 +898,9 @@ static void print_formatted_result(FILE *stream, struct slurp_state *state , con
+ 			case 'h':
+ 				fprintf(stream, "%d", state->result.height);
+ 				continue;
++			case 'e':
++				fprintf(stream, "%d", state->edit_requested ? 1 : 0);
++				continue;
+ 			case 'X':
+ 				assert(output);
+ 				fprintf(stream, "%d", state->result.x - output->logical_geometry.x);

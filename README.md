@@ -6,10 +6,11 @@ ShareX-style region capture for [XerahS](https://github.com/ShareX/XerahS) on Hy
 - Hover snaps to windows, the bar, popups and UI elements inside windows (panels, buttons, tables).
 - The selection has a dashed border, and a round magnifier follows the cursor (scroll to zoom, it grows as you zoom out).
 - Click = what's under the cursor, drag = free region (also across monitors). A wobbly click doesn't give you a 2×9 px screenshot.
+- Click (or drag) captures right away; press **E** instead of clicking to open the OmaSnap editor on that region. Right click or Esc cancels.
 - The OmaSnap editor opens on the monitor you selected on.
 - Hotkeys don't leak into the focused app (no stuck keys in games).
 
-It's a set of wrappers around `slurp`/`grim`/`omasnap` that XerahS calls, plus a small UI element detector and three slurp patches. Without the patched slurp you only lose the dashed border and the magnifier.
+It's a set of wrappers around `slurp`/`grim`/`omasnap` that XerahS calls, plus a small UI element detector and a few slurp patches. Without the patched slurp you lose the dashed border, the magnifier and E (the editor then opens after every capture, as XerahS does by default).
 
 **Setup:** give [AGENTS.md](AGENTS.md) to your coding agent, or follow it by hand.
 

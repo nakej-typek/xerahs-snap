@@ -17,6 +17,7 @@ UI_RECTS=$HOME/.local/lib/xerahs-snap/ui-rects
 CLICK_PX=15  # selections smaller than this in both dimensions count as a click
 FREEZE_PID=${XDG_RUNTIME_DIR:-/tmp}/xerahs-freeze.pid
 LAST_MONITOR=${XDG_RUNTIME_DIR:-/tmp}/xerahs-last-monitor
+EDIT_FLAG=${XDG_RUNTIME_DIR:-/tmp}/xerahs-edit  # 1 = E pressed: open the editor (omasnap wrapper)
 STYLE=(-b '#11111b80' -c '#cba6f7ff' -s '#00000000' -w 2)
 plus=
 if [[ -x $HOME/.local/lib/slurp-plus/slurp ]]; then
@@ -127,10 +128,13 @@ if [[ -n $freeze ]]; then
   done
 fi
 
+# The patched slurp also reports whether the selection was taken with E (edit) or a click.
+sel_fmt='%x %y %w %h'
+[[ -n $plus ]] && sel_fmt+=' %e'
 if [[ -n $monitors ]]; then
-  sel=$(printf '%s\n' "$boxes" | sed '/^$/d' | "$real" -o -f '%x %y %w %h' "${STYLE[@]}" "${args[@]}")
+  sel=$(printf '%s\n' "$boxes" | sed '/^$/d' | "$real" -o -f "$sel_fmt" "${STYLE[@]}" "${args[@]}")
 else
-  sel=$("$real" -f '%x %y %w %h' "${STYLE[@]}" "${args[@]}")
+  sel=$("$real" -f "$sel_fmt" "${STYLE[@]}" "${args[@]}")
 fi
 rc=$?
 [[ -n $snap ]] && rm -f "$snap"
@@ -138,7 +142,11 @@ if ((rc != 0)) || [[ -z $sel ]]; then
   unfreeze
   exit $((rc ? rc : 1))
 fi
-read -r x y w h <<<"$sel"
+read -r x y w h edit <<<"$sel"
+# Screenshots only (recording passes -f): click = capture as is, E = open the editor.
+if [[ -n $plus && -z $fmt ]]; then
+  echo "${edit:-0}" >"$EDIT_FLAG"
+fi
 
 # A click that moves the mouse by a few pixels is a "drag" for slurp and yields a 2x9 px
 # screenshot. Treat tiny selections as a click: take the smallest window/monitor box under

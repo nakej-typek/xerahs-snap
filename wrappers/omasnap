@@ -15,6 +15,34 @@ for a in "$@"; do
 done
 ((file)) || exec "$real" "$@"
 
+# Alt+S with the slurp wrapper: the editor only opens when the selection was taken with E.
+# After a plain click, answer like OmaSnap would with the image unchanged, so XerahS saves
+# and copies it right away.
+EDIT_FLAG=${XDG_RUNTIME_DIR:-/tmp}/xerahs-edit
+if [[ -f $EDIT_FLAG ]] && (($(date +%s) - $(stat -c %Y "$EDIT_FLAG") < 120)); then
+  edit=$(<"$EDIT_FLAG")
+  rm -f "$EDIT_FLAG"
+  if [[ $edit == 0 ]]; then
+    in= out= res=
+    args=("$@")
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      case ${args[i]} in
+        --file) in=${args[i + 1]} ;;
+        --output) out=${args[i + 1]} ;;
+        --result-json) res=${args[i + 1]} ;;
+      esac
+    done
+    if [[ -f $in && -n $out && -n $res ]] && cp -- "$in" "$out"; then
+      # PNG IHDR: width and height, big endian, at byte 16
+      read -r w h < <(od -An -tu1 -j16 -N8 -- "$in" |
+        awk '{ print $1 * 16777216 + $2 * 65536 + $3 * 256 + $4, $5 * 16777216 + $6 * 65536 + $7 * 256 + $8 }')
+      printf '{"schemaVersion":1,"status":"ok","target":"file","path":"%s","pixelWidth":%d,"pixelHeight":%d,"logicalWidth":%d,"logicalHeight":%d,"scale":1,"monitor":"","region":null,"window":null,"annotated":false,"action":"both","documentPath":null,"omasnapVersion":"xerahs-snap"}\n' \
+        "$out" "${w:-0}" "${h:-0}" "${w:-0}" "${h:-0}" >"$res"
+      exit 0
+    fi
+  fi
+fi
+
 mon=
 if [[ -f $LAST_MONITOR ]] && (($(date +%s) - $(stat -c %Y "$LAST_MONITOR") < 120)); then
   mon=$(<"$LAST_MONITOR")
