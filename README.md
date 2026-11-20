@@ -4,7 +4,7 @@ ShareX-style region capture for [XerahS](https://github.com/ShareX/XerahS) on Hy
 
 - The screen freezes and dims on the hotkey.
 - Hover snaps to windows, the bar, popups and UI elements inside windows (panels, buttons, tables).
-- The selection has a dashed border, and a magnifier follows the cursor (scroll to zoom).
+- The selection has a dashed border, and a round magnifier follows the cursor (scroll to zoom, it grows as you zoom out).
 - Click = what's under the cursor, drag = free region (also across monitors). A wobbly click doesn't give you a 2×9 px screenshot.
 - The OmaSnap editor opens on the monitor you selected on.
 - Hotkeys don't leak into the focused app (no stuck keys in games).

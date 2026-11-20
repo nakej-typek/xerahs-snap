@@ -1,19 +1,20 @@
 diff --git a/include/slurp.h b/include/slurp.h
-index 65c04ca..529df04 100644
+index 65c04ca..5c5153c 100644
 --- a/include/slurp.h
 +++ b/include/slurp.h
-@@ -57,6 +57,9 @@ struct slurp_state {
+@@ -57,6 +57,10 @@ struct slurp_state {
  
  	uint32_t border_weight;
  	uint32_t dash_length;
 +	cairo_surface_t *loupe; // screenshot of the layout for the magnifier (-Z), or NULL
 +	int loupe_zoom; // magnification, changed with the scroll wheel
++	int loupe_pixels; // odd number of screen pixels across the loupe at that zoom
 +	double loupe_scroll; // accumulated scroll (touchpads send small steps)
  	bool display_dimensions;
  	bool single_point;
  	bool restrict_selection;
 diff --git a/main.c b/main.c
-index 4f1caa1..7edfb93 100644
+index 4f1caa1..19c453c 100644
 --- a/main.c
 +++ b/main.c
 @@ -25,6 +25,60 @@ static void noop() {
@@ -107,12 +108,16 @@ index 4f1caa1..7edfb93 100644
  		seat_set_outputs_dirty(seat);
  	}
  }
-@@ -267,12 +324,39 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
+@@ -267,12 +324,44 @@ static void pointer_handle_button(void *data, struct wl_pointer *wl_pointer,
  	}
  }
  
-+static const int loupe_zooms[] = { 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24 };
-+#define LOUPE_ZOOMS (int)(sizeof(loupe_zooms) / sizeof(loupe_zooms[0]))
++// Magnifier levels: zooming out shows more pixels in a bigger loupe (ShareX-like).
++static const struct { int zoom, pixels; } loupe_levels[] = {
++	{ 2, 115 }, { 3, 71 }, { 4, 51 }, { 5, 39 }, { 6, 31 },
++	{ 8, 21 }, { 10, 15 }, { 12, 11 }, { 16, 7 }, { 20, 5 },
++};
++#define LOUPE_LEVELS (int)(sizeof(loupe_levels) / sizeof(loupe_levels[0]))
 +
 +// Scroll up zooms the magnifier in, scroll down out (one step per wheel notch).
 +static void pointer_handle_axis(void *data, struct wl_pointer *wl_pointer,
@@ -129,12 +134,13 @@ index 4f1caa1..7edfb93 100644
 +	}
 +	state->loupe_scroll -= steps * 10;
 +	int i = 0;
-+	while (i < LOUPE_ZOOMS - 1 && loupe_zooms[i] < state->loupe_zoom) {
++	while (i < LOUPE_LEVELS - 1 && loupe_levels[i].zoom < state->loupe_zoom) {
 +		i++;
 +	}
 +	i -= steps;
-+	i = i < 0 ? 0 : i >= LOUPE_ZOOMS ? LOUPE_ZOOMS - 1 : i;
-+	state->loupe_zoom = loupe_zooms[i];
++	i = i < 0 ? 0 : i >= LOUPE_LEVELS ? LOUPE_LEVELS - 1 : i;
++	state->loupe_zoom = loupe_levels[i].zoom;
++	state->loupe_pixels = loupe_levels[i].pixels;
 +	seat_set_outputs_dirty(seat);
 +}
 +
@@ -148,7 +154,7 @@ index 4f1caa1..7edfb93 100644
  };
  
  static void keyboard_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
-@@ -719,6 +803,8 @@ static const char usage[] =
+@@ -719,6 +808,8 @@ static const char usage[] =
  	"  -F s         Set the font family for the dimensions.\n"
  	"  -w n         Set border weight.\n"
  	"  -D n         Draw the selection border dashed, n px dashes (0 = solid).\n"
@@ -157,15 +163,16 @@ index 4f1caa1..7edfb93 100644
  	"  -f s         Set output format.\n"
  	"  -o           Select a display output.\n"
  	"  -p           Select a single point.\n"
-@@ -892,6 +978,7 @@ int main(int argc, char *argv[]) {
+@@ -892,6 +983,8 @@ int main(int argc, char *argv[]) {
  		},
  		.border_weight = 2,
  		.dash_length = 0,
 +		.loupe_zoom = 8,
++		.loupe_pixels = 21,
  		.display_dimensions = false,
  		.restrict_selection = false,
  		.fixed_aspect_ratio = false,
-@@ -903,7 +990,7 @@ int main(int argc, char *argv[]) {
+@@ -903,7 +996,7 @@ int main(int argc, char *argv[]) {
  	char *format = "%x,%y %wx%h\n";
  	bool output_boxes = false;
  	int w, h;
@@ -174,7 +181,7 @@ index 4f1caa1..7edfb93 100644
  		switch (opt) {
  		case 'h':
  			printf("%s", usage);
-@@ -926,6 +1013,13 @@ int main(int argc, char *argv[]) {
+@@ -926,6 +1019,13 @@ int main(int argc, char *argv[]) {
  		case 'f':
  			format = optarg;
  			break;
@@ -188,7 +195,7 @@ index 4f1caa1..7edfb93 100644
  		case 'F':
  			state.font_family = optarg;
  			break;
-@@ -1122,6 +1216,9 @@ int main(int argc, char *argv[]) {
+@@ -1122,6 +1222,9 @@ int main(int argc, char *argv[]) {
  	wl_registry_destroy(state.registry);
  	xkb_context_unref(state.xkb_context);
  	wl_display_disconnect(state.display);
@@ -199,7 +206,7 @@ index 4f1caa1..7edfb93 100644
  	struct slurp_box *box, *box_tmp;
  	wl_list_for_each_safe(box, box_tmp, &state.boxes, link) {
 diff --git a/render.c b/render.c
-index 18acb56..91364b3 100644
+index 18acb56..5bab4c5 100644
 --- a/render.c
 +++ b/render.c
 @@ -1,5 +1,6 @@
@@ -209,15 +216,15 @@ index 18acb56..91364b3 100644
  #include <stdlib.h>
  
  #include "pool-buffer.h"
-@@ -19,6 +20,87 @@ static void draw_rect(cairo_t *cairo, struct slurp_box *box, uint32_t color) {
+@@ -19,6 +20,96 @@ static void draw_rect(cairo_t *cairo, struct slurp_box *box, uint32_t color) {
  			box->width, box->height);
  }
  
-+#define LOUPE_SIZE 120 // px on screen
 +#define LOUPE_GAP 24
++#define LOUPE_TAU 6.283185307179586
 +
-+// ShareX-style magnifier next to the cursor (x, y in layout coordinates). The -Z image is a
-+// screenshot of the whole layout, whose top-left corner is the smallest output origin.
++// ShareX-style round magnifier next to the cursor (x, y in layout coordinates). The -Z image
++// is a screenshot of the whole layout, whose top-left corner is the smallest output origin.
 +static void draw_loupe(cairo_t *cairo, struct slurp_state *state,
 +		struct slurp_output *output, int32_t x, int32_t y) {
 +	int32_t ox = INT32_MAX, oy = INT32_MAX;
@@ -230,9 +237,9 @@ index 18acb56..91364b3 100644
 +			oy = o->logical_geometry.y;
 +		}
 +	}
-+	// Same loupe size at every zoom level; the number of pixels shown changes (kept odd).
-+	const int zoom = state->loupe_zoom, pixels = (LOUPE_SIZE / zoom) | 1;
++	const int zoom = state->loupe_zoom, pixels = state->loupe_pixels; // pixels is odd
 +	const int half = pixels / 2, size = pixels * zoom, label = 22;
++	const double r = size / 2.0;
 +	struct slurp_box *g = &output->logical_geometry;
 +	double cx = x - g->x, cy = y - g->y;
 +	double lx = cx + LOUPE_GAP, ly = cy + LOUPE_GAP;
@@ -244,11 +251,13 @@ index 18acb56..91364b3 100644
 +	}
 +
 +	cairo_save(cairo);
-+	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-+	cairo_rectangle(cairo, lx, ly, size, size);
++	cairo_new_path(cairo);
++	cairo_arc(cairo, lx + r, ly + r, r, 0, LOUPE_TAU);
 +	cairo_clip(cairo);
++	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
 +	set_source_u32(cairo, 0x000000FF); // outside the image (screen edge)
 +	cairo_paint(cairo);
++	cairo_save(cairo);
 +	cairo_translate(cairo, lx, ly);
 +	cairo_scale(cairo, zoom, zoom);
 +	cairo_set_source_surface(cairo, state->loupe,
@@ -257,9 +266,8 @@ index 18acb56..91364b3 100644
 +	cairo_paint(cairo);
 +	cairo_restore(cairo);
 +
-+	cairo_save(cairo);
-+	cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
 +	// Crosshair through the centre pixel, which itself gets a black/white outline.
++	cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
 +	double c0 = half * zoom;
 +	set_source_u32(cairo, (state->colors.border & 0xFFFFFF00) | 0x60);
 +	cairo_rectangle(cairo, lx, ly + c0, c0, zoom);
@@ -274,22 +282,30 @@ index 18acb56..91364b3 100644
 +	set_source_u32(cairo, 0xFFFFFFFF);
 +	cairo_rectangle(cairo, lx + c0 + 0.5, ly + c0 + 0.5, zoom - 1, zoom - 1);
 +	cairo_stroke(cairo);
-+	// Frame
++	cairo_restore(cairo);
++
++	cairo_save(cairo);
++	cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
++	// Ring
++	cairo_new_path(cairo);
++	cairo_arc(cairo, lx + r, ly + r, r + 1, 0, LOUPE_TAU);
 +	cairo_set_line_width(cairo, 2);
 +	set_source_u32(cairo, state->colors.border);
-+	cairo_rectangle(cairo, lx - 1, ly - 1, size + 2, size + 2);
 +	cairo_stroke(cairo);
-+	// Position below the loupe
-+	char text[32];
-+	snprintf(text, sizeof(text), "X: %d  Y: %d", x, y);
-+	set_source_u32(cairo, 0x000000C0);
-+	cairo_rectangle(cairo, lx - 2, ly + size + 2, size + 4, label - 2);
-+	cairo_fill(cairo);
++	// Position (and zoom) centred below the loupe
++	char text[48];
++	snprintf(text, sizeof(text), "X: %d  Y: %d  %dx", x, y, zoom);
 +	cairo_select_font_face(cairo, state->font_family,
 +		CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
 +	cairo_set_font_size(cairo, 12);
++	cairo_text_extents_t ext;
++	cairo_text_extents(cairo, text, &ext);
++	double tw = ext.x_advance + 12, tx = lx + r - tw / 2;
++	set_source_u32(cairo, 0x000000C0);
++	cairo_rectangle(cairo, tx, ly + size + 4, tw, label - 4);
++	cairo_fill(cairo);
 +	set_source_u32(cairo, 0xFFFFFFFF);
-+	cairo_move_to(cairo, lx + 4, ly + size + label - 6);
++	cairo_move_to(cairo, tx + 6, ly + size + label - 6);
 +	cairo_show_text(cairo, text);
 +	cairo_restore(cairo);
 +}
@@ -297,7 +313,7 @@ index 18acb56..91364b3 100644
  static void box_layout_to_output(struct slurp_box *box, struct slurp_output *output) {
  	box->x -= output->logical_geometry.x;
  	box->y -= output->logical_geometry.y;
-@@ -93,4 +175,13 @@ void render(struct slurp_output *output) {
+@@ -93,4 +184,13 @@ void render(struct slurp_output *output) {
  			cairo_show_text(cairo, dimensions);
  		}
  	}
