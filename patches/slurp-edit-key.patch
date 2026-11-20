@@ -11,19 +11,18 @@ index 5c5153c..b2f90f3 100644
  	bool restrict_selection;
  	struct wl_list boxes; // slurp_box::link
 diff --git a/main.c b/main.c
-index d32806f..9f62b37 100644
+index d32806f..dab2650 100644
 --- a/main.c
 +++ b/main.c
-@@ -416,6 +416,17 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+@@ -416,6 +416,16 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
  	switch (key_state) {
  	case WL_KEYBOARD_KEY_STATE_PRESSED:
  		switch (keysym) {
 +		case XKB_KEY_e:
 +		case XKB_KEY_E:
-+			// Take the box under the cursor like a click, and tell the caller (format %e)
-+			// that the user wants to edit the capture.
-+			if (seat->pointer_selection.has_selection && !state->single_point &&
-+					seat->button_state != WL_POINTER_BUTTON_STATE_PRESSED) {
++			// Take the box under the cursor (or the region being dragged) like a click, and
++			// tell the caller (format %e) that the user wants to edit the capture.
++			if (seat->pointer_selection.has_selection && !state->single_point) {
 +				state->result = seat->pointer_selection.selection;
 +				state->edit_requested = true;
 +				state->running = false;
@@ -32,7 +31,7 @@ index d32806f..9f62b37 100644
  		case XKB_KEY_Escape:
  			seat->pointer_selection.has_selection = false;
  			seat->touch_selection.has_selection = false;
-@@ -887,6 +898,9 @@ static void print_formatted_result(FILE *stream, struct slurp_state *state , con
+@@ -887,6 +897,9 @@ static void print_formatted_result(FILE *stream, struct slurp_state *state , con
  			case 'h':
  				fprintf(stream, "%d", state->result.height);
  				continue;
