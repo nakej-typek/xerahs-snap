@@ -3,6 +3,8 @@
 // other apps' widget trees, so this works on pixels: mark colour edges, flood-fill the regions
 // between them and keep regions that fill their bounding box once holes are ignored, i.e. a
 // shape with straight borders. Text inside a button only punches holes, the outline still counts.
+// Pictures (videos, images, thumbnails) are found as rectangular holes in large backgrounds,
+// and cells split only by thin lines (tables, tab bars) are reported as one element.
 //
 // Usage: grim -s 1 -t ppm - | ui-rects [offset_x offset_y]
 // Prints "x,y wxh" per element (slurp's box format), in layout coordinates.
@@ -17,6 +19,13 @@
 #define RECT_FILL 0.90    // share of the bbox covered by the row spans of the region
 #define MAX_RECTS 4000
 #define JOIN_GAP 4        // cells this close (a grid line between them) belong to one element
+#define SEED_DIFF 4       // max channel difference from the colour a flat region started at
+#define BIG_FLAT 20000    // flat regions at least this big (px) are backgrounds with holes
+#define BIG_REGIONS 12    // how many of the biggest backgrounds to search for holes
+#define MIN_PIC_W 40
+#define MIN_PIC_H 30
+#define PIC_DENSE 0.90    // a hole must fill its bbox this much (pictures do, text does not)
+#define DUP 4             // boxes this close on every side are the same element
 #define ALIGN 3           // px of slack when comparing cell edges
 #define JOIN_FILL 0.85    // a joined group must cover this much of its outline
 
@@ -34,12 +43,14 @@ static int read_int(FILE *f) {
     return v;
 }
 
-static inline int differs(uint32_t a, uint32_t b) {
+static inline int differs_by(uint32_t a, uint32_t b, int limit) {
     if (a == b) return 0; // flat UI: by far the common case
     for (int sh = 0; sh < 24; sh += 8)
-        if (abs((int)(a >> sh & 255) - (int)(b >> sh & 255)) > EDGE_DIFF) return 1;
+        if (abs((int)(a >> sh & 255) - (int)(b >> sh & 255)) > limit) return 1;
     return 0;
 }
+
+static inline int differs(uint32_t a, uint32_t b) { return differs_by(a, b, EDGE_DIFF); }
 
 typedef struct { int x0, y0, x1, y1; long n; } Region;
 
@@ -94,7 +105,13 @@ int main(int argc, char **argv) {
             if (x + 1 < w) nb[k++] = i + 1;
             if (y > 0) nb[k++] = i - w;
             if (y + 1 < h) nb[k++] = i + w;
-            while (k--) if (!edge[nb[k]] && label[nb[k]] < 0) { label[nb[k]] = (int32_t)count; stack[sp++] = nb[k]; }
+            // Also stay close to the seed colour: a smooth gradient (dark parts of a video
+            // fading into a dark page) must not let the page background leak into the picture.
+            while (k--)
+                if (!edge[nb[k]] && label[nb[k]] < 0 && !differs_by(rgb[nb[k]], rgb[s], SEED_DIFF)) {
+                    label[nb[k]] = (int32_t)count;
+                    stack[sp++] = nb[k];
+                }
         }
         reg[count++] = r;
     }
@@ -132,6 +149,65 @@ int main(int argc, char **argv) {
         out[nout++] = (Box){ r.x0 > 0 ? r.x0 - 1 : 0, r.y0 > 0 ? r.y0 - 1 : 0,
                              r.x1 + 1 < w ? r.x1 + 1 : r.x1, r.y1 + 1 < h ? r.y1 + 1 : r.y1 };
     }
+
+    // Pictures (videos, images, thumbnails) are not flat, and may contain flat patches of their
+    // own (sky, dark scenes). What makes them elements is that they are holes in a large
+    // background: for each of the biggest flat regions, group everything inside its bbox that
+    // is not that region into 4-connected blobs, and keep the dense, rectangular ones.
+    int bigs[BIG_REGIONS], nbig = 0;
+    for (size_t c = 0; c < count; c++) {
+        if (reg[c].n < BIG_FLAT) continue;
+        int pos = nbig < BIG_REGIONS ? nbig++ : BIG_REGIONS - 1;
+        if (pos == BIG_REGIONS - 1 && nbig == BIG_REGIONS && reg[bigs[pos]].n >= reg[c].n) continue;
+        while (pos > 0 && reg[bigs[pos - 1]].n < reg[c].n) { bigs[pos] = bigs[pos - 1]; pos--; }
+        bigs[pos] = (int)c;
+    }
+    uint8_t *seen = calloc(n, 1); // pass number + 1 that visited the pixel
+    for (int k = 0; k < nbig && nout < MAX_RECTS; k++) {
+        int32_t bg = bigs[k];
+        Region B = reg[bg];
+        for (int y0 = B.y0; y0 <= B.y1; y0++)
+            for (int x0 = B.x0; x0 <= B.x1; x0++) {
+                size_t s0 = (size_t)y0 * w + x0;
+                if (label[s0] == bg || seen[s0] == k + 1) continue;
+                Region r = { x0, y0, x0, y0, 0 };
+                size_t sp = 0;
+                stack[sp++] = (uint32_t)s0;
+                seen[s0] = (uint8_t)(k + 1);
+                while (sp) {
+                    uint32_t i = stack[--sp];
+                    int x = i % w, y = i / w;
+                    r.n++;
+                    if (x < r.x0) r.x0 = x;
+                    if (x > r.x1) r.x1 = x;
+                    if (y < r.y0) r.y0 = y;
+                    if (y > r.y1) r.y1 = y;
+                    uint32_t nb[4]; int m = 0;
+                    if (x > B.x0) nb[m++] = i - 1;
+                    if (x < B.x1) nb[m++] = i + 1;
+                    if (y > B.y0) nb[m++] = i - w;
+                    if (y < B.y1) nb[m++] = i + w;
+                    while (m--)
+                        if (label[nb[m]] != bg && seen[nb[m]] != k + 1) {
+                            seen[nb[m]] = (uint8_t)(k + 1);
+                            stack[sp++] = nb[m];
+                        }
+                }
+                int rw = r.x1 - r.x0 + 1, rh = r.y1 - r.y0 + 1;
+                if (rw < MIN_PIC_W || rh < MIN_PIC_H) continue;
+                if (rw >= B.x1 - B.x0 - 1 && rh >= B.y1 - B.y0 - 1) continue; // the frame itself
+                if (r.n < PIC_DENSE * rw * rh) continue;
+                if (nout < MAX_RECTS) out[nout++] = (Box){ r.x0, r.y0, r.x1, r.y1 };
+            }
+    }
+
+    // The same element can come out of both passes, or as a hole of two nested backgrounds.
+    for (int i = 0; i < nout; i++)
+        for (int j = i + 1; j < nout; j++)
+            if (abs(out[i].x0 - out[j].x0) <= DUP && abs(out[i].y0 - out[j].y0) <= DUP &&
+                abs(out[i].x1 - out[j].x1) <= DUP && abs(out[i].y1 - out[j].y1) <= DUP) {
+                out[j--] = out[--nout];
+            }
 
     // Cells split only by thin lines (tables, grids, segmented bars) form one element: join
     // boxes that share an edge across a gap of at most JOIN_GAP px and report the group's
