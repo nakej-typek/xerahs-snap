@@ -1,0 +1,12 @@
+#!/bin/bash
+# grim wrapper for XerahS: capture as usual, then drop the frozen frame the slurp wrapper
+# put on screen (hyprpicker -r -z), so the screenshot shows the moment Alt+S was pressed.
+FREEZE_PID=${XDG_RUNTIME_DIR:-/tmp}/xerahs-freeze.pid
+
+/usr/bin/grim "$@"
+rc=$?
+if [[ -f $FREEZE_PID ]]; then
+  kill "$(<"$FREEZE_PID")" 2>/dev/null
+  rm -f "$FREEZE_PID"
+fi
+exit $rc

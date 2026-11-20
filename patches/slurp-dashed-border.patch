@@ -1,0 +1,79 @@
+diff --git a/include/slurp.h b/include/slurp.h
+index 5fe2ced..bcfac26 100644
+--- a/include/slurp.h
++++ b/include/slurp.h
+@@ -53,6 +53,7 @@ struct slurp_state {
+ 	const char *font_family;
+ 
+ 	uint32_t border_weight;
++	uint32_t dash_length;
+ 	bool display_dimensions;
+ 	bool single_point;
+ 	bool restrict_selection;
+diff --git a/main.c b/main.c
+index 135c98a..22238e4 100644
+--- a/main.c
++++ b/main.c
+@@ -709,6 +709,7 @@ static const char usage[] =
+ 	"  -B #rrggbbaa Set option box color.\n"
+ 	"  -F s         Set the font family for the dimensions.\n"
+ 	"  -w n         Set border weight.\n"
++	"  -D n         Draw the selection border dashed, n px dashes (0 = solid).\n"
+ 	"  -f s         Set output format.\n"
+ 	"  -o           Select a display output.\n"
+ 	"  -p           Select a single point.\n"
+@@ -881,6 +882,7 @@ int main(int argc, char *argv[]) {
+ 			.choice = BG_COLOR,
+ 		},
+ 		.border_weight = 2,
++		.dash_length = 0,
+ 		.display_dimensions = false,
+ 		.restrict_selection = false,
+ 		.fixed_aspect_ratio = false,
+@@ -892,7 +894,7 @@ int main(int argc, char *argv[]) {
+ 	char *format = "%x,%y %wx%h\n";
+ 	bool output_boxes = false;
+ 	int w, h;
+-	while ((opt = getopt(argc, argv, "hdb:c:s:B:w:proa:f:F:")) != -1) {
++	while ((opt = getopt(argc, argv, "hdb:c:s:B:w:D:proa:f:F:")) != -1) {
+ 		switch (opt) {
+ 		case 'h':
+ 			printf("%s", usage);
+@@ -928,6 +930,16 @@ int main(int argc, char *argv[]) {
+ 			}
+ 			break;
+ 		}
++		case 'D': {
++			errno = 0;
++			char *endptr;
++			state.dash_length = strtol(optarg, &endptr, 10);
++			if (*endptr || errno) {
++				fprintf(stderr, "Error: expected numeric argument for -D\n");
++				exit(EXIT_FAILURE);
++			}
++			break;
++		}
+ 		case 'p':
+ 			state.single_point = true;
+ 			break;
+diff --git a/render.c b/render.c
+index d91f8a3..18acb56 100644
+--- a/render.c
++++ b/render.c
+@@ -67,8 +67,16 @@ void render(struct slurp_output *output) {
+ 
+ 		// Draw border
+ 		cairo_set_line_width(cairo, state->border_weight);
++		if (state->dash_length > 0) {
++			// Dashed: border-colour dashes over a dark line, readable on any background
++			draw_rect(cairo, &b, 0x000000B0);
++			cairo_stroke(cairo);
++			double dash = state->dash_length;
++			cairo_set_dash(cairo, &dash, 1, 0);
++		}
+ 		draw_rect(cairo, &b, state->colors.border);
+ 		cairo_stroke(cairo);
++		cairo_set_dash(cairo, NULL, 0, 0);
+ 
+ 		if (state->display_dimensions) {
+ 			cairo_select_font_face(cairo, state->font_family,

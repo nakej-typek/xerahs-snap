@@ -1,0 +1,32 @@
+#!/bin/bash
+# omasnap wrapper for XerahS (XERAHS_OMASNAP_PATH in its systemd unit points here).
+# XerahS opens the annotation editor with --file only, so OmaSnap puts it on Qt's primary
+# screen. Pass --handoff-monitor = the monitor where the selection was made (written by the
+# slurp wrapper), or the one under the cursor.
+real=/usr/lib/xerahs/omasnap/omasnap
+LAST_MONITOR=${XDG_RUNTIME_DIR:-/tmp}/xerahs-last-monitor
+
+file=0
+for a in "$@"; do
+  case $a in
+    --file) file=1 ;;
+    --handoff-monitor*) exec "$real" "$@" ;;
+  esac
+done
+((file)) || exec "$real" "$@"
+
+mon=
+if [[ -f $LAST_MONITOR ]] && (($(date +%s) - $(stat -c %Y "$LAST_MONITOR") < 120)); then
+  mon=$(<"$LAST_MONITOR")
+fi
+if [[ -z $mon && -n $HYPRLAND_INSTANCE_SIGNATURE ]] && command -v jq >/dev/null; then
+  read -r cx cy < <(hyprctl -j cursorpos 2>/dev/null | jq -r '"\(.x | floor) \(.y | floor)"')
+  [[ -n $cx ]] && mon=$(hyprctl -j monitors 2>/dev/null | jq -r --argjson px "$cx" --argjson py "$cy" '
+    [.[] | select($px >= .x and $py >= .y
+                  and $px < .x + ((if .transform % 2 == 1 then .height else .width end) / .scale)
+                  and $py < .y + ((if .transform % 2 == 1 then .width else .height end) / .scale))
+    ][0].name // empty')
+fi
+
+[[ -n $mon ]] && exec "$real" "$@" --handoff-monitor "$mon"
+exec "$real" "$@"

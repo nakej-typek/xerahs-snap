@@ -1,0 +1,176 @@
+#!/bin/bash
+# slurp wrapper for XerahS (its systemd unit puts this dir first in PATH). Used by Alt+S
+# (grim + slurp) and Alt+; (region recording).
+# On Hyprland it feeds slurp the windows on the visible workspaces (clipped to their monitor)
+# and adds the monitors (-o). slurp picks the smallest box under the cursor on a plain click:
+# click on a window = that window, click on empty desktop = that one monitor, drag = free
+# region (also across both monitors).
+# Screenshots (XerahS calls plain `slurp`, recording passes -f) freeze the screen like ShareX:
+# hyprpicker -r -z shows a still frame over everything, slurp dims it, and the grim wrapper
+# next to this one captures that frame and then drops the freeze.
+# Besides windows and monitors it snaps to layer surfaces (bar, notifications, popups) and to
+# UI elements inside windows (buttons, fields, panels) found in a screenshot by ui-rects.
+# The patched slurp from build.sh in the xerahs-snap repo draws a dashed border (-D),
+# ignores mouse wobble on click and shows a ShareX-style magnifier (-Z, from the same screenshot).
+real=/usr/bin/slurp
+UI_RECTS=$HOME/.local/lib/xerahs-snap/ui-rects
+CLICK_PX=15  # selections smaller than this in both dimensions count as a click
+FREEZE_PID=${XDG_RUNTIME_DIR:-/tmp}/xerahs-freeze.pid
+LAST_MONITOR=${XDG_RUNTIME_DIR:-/tmp}/xerahs-last-monitor
+STYLE=(-b '#11111b80' -c '#cba6f7ff' -s '#00000000' -w 2)
+plus=
+if [[ -x $HOME/.local/lib/slurp-plus/slurp ]]; then
+  real=$HOME/.local/lib/slurp-plus/slurp
+  plus=1
+  STYLE+=(-D 6)
+fi
+
+# Explicit point/restricted/output modes: behave like plain slurp.
+for a in "$@"; do
+  case $a in -p | -r | -o) exec "$real" "$@" ;; esac
+done
+
+fmt=
+args=()
+while (($#)); do
+  case $1 in
+    -f) fmt=$2; shift 2 ;;
+    *) args+=("$1"); shift ;;
+  esac
+done
+
+# Screenshot the layout right away (for the magnifier and the UI element detector), in parallel
+# with the freeze and the hyprctl queries. Real grim, not the wrapper next to us (that one drops
+# the freeze). ui-rects coordinates are relative to the layout's top-left corner; shifted below.
+snap=
+ui=
+[[ ${XERAHS_SNAP_UI:-1} != 0 && -x $UI_RECTS ]] && ui=$(mktemp -p "${XDG_RUNTIME_DIR:-/tmp}")
+if [[ -n $plus || -n $ui ]] && snap=$(mktemp -p "${XDG_RUNTIME_DIR:-/tmp}" --suffix=.ppm); then
+  { /usr/bin/grim -s 1 -t ppm "$snap" 2>/dev/null && [[ -n $ui ]] && "$UI_RECTS" <"$snap" >"$ui"; } </dev/null &
+  ui_pid=$!
+fi
+
+unfreeze() {
+  [[ -f $FREEZE_PID ]] && kill "$(<"$FREEZE_PID")" 2>/dev/null
+  rm -f "$FREEZE_PID"
+}
+
+# Freeze first, in parallel with the hyprctl queries below. Its output must not reach our
+# stdout: XerahS reads slurp's stdout to EOF and would wait for hyprpicker to exit.
+freeze=
+if [[ -z $fmt && ${XERAHS_FREEZE:-1} != 0 ]] && command -v hyprpicker >/dev/null; then
+  unfreeze
+  hyprpicker -r -z >/dev/null 2>&1 </dev/null &
+  freeze=$!
+  echo "$freeze" >"$FREEZE_PID"
+fi
+
+boxes=
+monitors=
+if [[ -n $HYPRLAND_INSTANCE_SIGNATURE ]] && command -v hyprctl >/dev/null && command -v jq >/dev/null &&
+  monitors=$(hyprctl -j monitors 2>/dev/null) && clients=$(hyprctl -j clients 2>/dev/null); then
+  boxes=$(jq -rn --argjson m "$monitors" --argjson c "$clients" '
+    [$m[] | {id, x, y,
+             w: ((if .transform % 2 == 1 then .height else .width end) / .scale | floor),
+             h: ((if .transform % 2 == 1 then .width else .height end) / .scale | floor),
+             ws: [.activeWorkspace.id, .specialWorkspace.id]}] as $mons
+    | $c[]
+    | select(.mapped and (.hidden | not)) as $w
+    | ($mons[] | select(.id == $w.monitor and (.ws | index($w.workspace.id)))) as $mon
+    | ([$w.at[0], $mon.x] | max) as $x1
+    | ([$w.at[1], $mon.y] | max) as $y1
+    | ([$w.at[0] + $w.size[0], $mon.x + $mon.w] | min) as $x2
+    | ([$w.at[1] + $w.size[1], $mon.y + $mon.h] | min) as $y2
+    | select($x2 > $x1 and $y2 > $y1)
+    | "\($x1),\($y1) \($x2 - $x1)x\($y2 - $y1)"
+  ' 2>/dev/null) || monitors=
+fi
+
+if [[ -n $monitors ]]; then
+  # Monitor rectangles in layout coordinates; boxes must lie fully inside one of them.
+  mrects=$(jq -r '.[] | "\(.x) \(.y) \((if .transform % 2 == 1 then .height else .width end) / .scale | floor) \((if .transform % 2 == 1 then .width else .height end) / .scale | floor)"' <<<"$monitors")
+  # Layer surfaces above the wallpaper (bar, notifications, popups), not full-monitor ones.
+  layers=$(hyprctl -j layers 2>/dev/null | jq -r '
+    [.[] | .levels | to_entries[] | select(.key != "0") | .value[]
+     | select(.namespace != "hyprpicker" and .namespace != "selection" and .w > 0 and .h > 0)
+     | "\(.x),\(.y) \(.w)x\(.h)"] | .[]' 2>/dev/null)
+  extra=$layers
+  [[ -n $snap ]] && wait "$ui_pid"
+  if [[ -n $ui ]]; then
+    read -r lx ly < <(jq -r '"\(map(.x) | min) \(map(.y) | min)"' <<<"$monitors")
+    extra+=$'\n'$(awk -v lx="$lx" -v ly="$ly" '{ split($1, p, ","); print p[1] + lx "," p[2] + ly " " $2 }' "$ui")
+    rm -f "$ui"
+  fi
+  inside=$(printf '%s\n' "$extra" | awk -v m="$mrects" '
+    BEGIN { n = split(m, ml, "\n"); for (i = 1; i <= n; i++) split(ml[i], M[i], " ") }
+    NF == 2 { split($1, p, ","); split($2, s, "x")
+      for (i = 1; i <= n; i++)
+        if (p[1] >= M[i][1] && p[2] >= M[i][2] && p[1] + s[1] <= M[i][1] + M[i][3] && p[2] + s[2] <= M[i][2] + M[i][4]) {
+          if (!(s[1] == M[i][3] && s[2] == M[i][4])) print; break } }')
+  boxes=$(printf '%s\n%s\n' "$boxes" "$inside" | sed '/^$/d' | sort -u)
+else
+  [[ -n $snap ]] && wait "$ui_pid"
+  [[ -n $ui ]] && rm -f "$ui"
+fi
+[[ -n $plus && -s $snap ]] && STYLE+=(-Z "$snap")
+
+# slurp has to map above the frozen frame: wait until hyprpicker has drawn it.
+if [[ -n $freeze ]]; then
+  for i in {1..25}; do
+    if [[ -n $monitors ]]; then
+      hyprctl -j layers 2>/dev/null | grep -q '"namespace": *"hyprpicker"' && break
+    elif ((i > 6)); then
+      break
+    fi
+    kill -0 "$freeze" 2>/dev/null || break
+    sleep 0.02
+  done
+fi
+
+if [[ -n $monitors ]]; then
+  sel=$(printf '%s\n' "$boxes" | sed '/^$/d' | "$real" -o -f '%x %y %w %h' "${STYLE[@]}" "${args[@]}")
+else
+  sel=$("$real" -f '%x %y %w %h' "${STYLE[@]}" "${args[@]}")
+fi
+rc=$?
+[[ -n $snap ]] && rm -f "$snap"
+if ((rc != 0)) || [[ -z $sel ]]; then
+  unfreeze
+  exit $((rc ? rc : 1))
+fi
+read -r x y w h <<<"$sel"
+
+# A click that moves the mouse by a few pixels is a "drag" for slurp and yields a 2x9 px
+# screenshot. Treat tiny selections as a click: take the smallest window/monitor box under
+# that point.
+if [[ -n $monitors ]] && ((w < CLICK_PX && h < CLICK_PX)); then
+  px=$((x + w / 2)) py=$((y + h / 2))
+  hit=$( { printf '%s\n' "$boxes"
+           jq -r '.[] | "\(.x),\(.y) \((if .transform % 2 == 1 then .height else .width end) / .scale | floor)x\((if .transform % 2 == 1 then .width else .height end) / .scale | floor)"' <<<"$monitors"
+         } | awk -v px="$px" -v py="$py" '
+    { split($1, p, ","); split($2, s, "x")
+      if (px >= p[1] && py >= p[2] && px < p[1] + s[1] && py < p[2] + s[2] && (best == "" || s[1] * s[2] < area))
+        { best = p[1] " " p[2] " " s[1] " " s[2]; area = s[1] * s[2] } }
+    END { print best }')
+  [[ -n $hit ]] && read -r x y w h <<<"$hit"
+fi
+
+# Remember the monitor under the middle of the selection: the omasnap wrapper opens the
+# annotation editor there instead of on Qt's primary screen.
+if [[ -n $monitors ]]; then
+  jq -r --argjson px $((x + w / 2)) --argjson py $((y + h / 2)) '
+    [.[] | select($px >= .x and $py >= .y
+                  and $px < .x + ((if .transform % 2 == 1 then .height else .width end) / .scale)
+                  and $py < .y + ((if .transform % 2 == 1 then .width else .height end) / .scale))
+    ][0].name // empty' <<<"$monitors" >"$LAST_MONITOR"
+fi
+
+# Safety net in case grim never runs: drop the freeze after a few seconds anyway.
+if [[ -n $freeze ]]; then
+  setsid -f bash -c "sleep 4; kill $freeze 2>/dev/null; [[ \$(cat '$FREEZE_PID' 2>/dev/null) == $freeze ]] && rm -f '$FREEZE_PID'" \
+    >/dev/null 2>&1 </dev/null
+fi
+
+out=${fmt:-'%x,%y %wx%h'}
+out=${out//%x/$x}; out=${out//%y/$y}; out=${out//%w/$w}; out=${out//%h/$h}
+printf '%s\n' "$out"

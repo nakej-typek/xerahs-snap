@@ -1,0 +1,260 @@
+diff --git a/include/slurp.h b/include/slurp.h
+index 65c04ca..be88392 100644
+--- a/include/slurp.h
++++ b/include/slurp.h
+@@ -57,6 +57,7 @@ struct slurp_state {
+ 
+ 	uint32_t border_weight;
+ 	uint32_t dash_length;
++	cairo_surface_t *loupe; // screenshot of the layout for the magnifier (-Z), or NULL
+ 	bool display_dimensions;
+ 	bool single_point;
+ 	bool restrict_selection;
+diff --git a/main.c b/main.c
+index 4f1caa1..b7cab88 100644
+--- a/main.c
++++ b/main.c
+@@ -25,6 +25,60 @@ static void noop() {
+ 
+ static void set_output_dirty(struct slurp_output *output);
+ 
++static int ppm_int(FILE *f) {
++	int c, v = 0;
++	while ((c = fgetc(f)) != EOF) {
++		if (c == '#') {
++			while ((c = fgetc(f)) != EOF && c != '\n') {
++			}
++			continue;
++		}
++		if (c >= '0' && c <= '9') {
++			break;
++		}
++	}
++	if (c == EOF) {
++		return -1;
++	}
++	do {
++		v = v * 10 + (c - '0');
++	} while ((c = fgetc(f)) >= '0' && c <= '9');
++	return v;
++}
++
++// Binary PPM (P6, 8 bit) as written by `grim -t ppm`, for the -Z magnifier.
++static cairo_surface_t *load_ppm(const char *path) {
++	FILE *f = fopen(path, "rb");
++	if (f == NULL) {
++		return NULL;
++	}
++	cairo_surface_t *surface = NULL;
++	int width, height;
++	if (fgetc(f) != 'P' || fgetc(f) != '6' || (width = ppm_int(f)) <= 0 ||
++			(height = ppm_int(f)) <= 0 || ppm_int(f) != 255) {
++		goto out;
++	}
++	surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, width, height);
++	unsigned char *data = cairo_image_surface_get_data(surface);
++	int stride = cairo_image_surface_get_stride(surface);
++	unsigned char rgb[3];
++	for (int y = 0; y < height; y++) {
++		uint32_t *row = (uint32_t *)(data + (size_t)y * stride);
++		for (int x = 0; x < width; x++) {
++			if (fread(rgb, 1, 3, f) != 3) {
++				cairo_surface_destroy(surface);
++				surface = NULL;
++				goto out;
++			}
++			row[x] = (uint32_t)rgb[0] << 16 | (uint32_t)rgb[1] << 8 | rgb[2];
++		}
++	}
++	cairo_surface_mark_dirty(surface);
++out:
++	fclose(f);
++	return surface;
++}
++
+ bool box_intersect(const struct slurp_box *a, const struct slurp_box *b) {
+ 	return a->x < b->x + b->width &&
+ 		a->x + a->width > b->x &&
+@@ -93,7 +147,10 @@ static void seat_update_selection(struct slurp_seat *seat) {
+ static void seat_set_outputs_dirty(struct slurp_seat *seat) {
+ 	struct slurp_output *output;
+ 	wl_list_for_each(output, &seat->state->outputs, link) {
+-		if (box_intersect(&output->logical_geometry,
++		if (seat->state->loupe) {
++			// The magnifier follows the cursor, also where no selection is.
++			set_output_dirty(output);
++		} else if (box_intersect(&output->logical_geometry,
+ 			&seat->pointer_selection.selection) ||
+ 				box_intersect(&output->logical_geometry,
+ 			&seat->touch_selection.selection)) {
+@@ -144,7 +201,7 @@ static void pointer_handle_enter(void *data, struct wl_pointer *wl_pointer,
+ 	}
+ 
+ 	// the places the cursor moved away from are also dirty
+-	if (seat->pointer_selection.has_selection) {
++	if (seat->pointer_selection.has_selection || seat->state->loupe) {
+ 		seat_set_outputs_dirty(seat);
+ 	}
+ 
+@@ -209,7 +266,7 @@ static void pointer_handle_motion(void *data, struct wl_pointer *wl_pointer,
+ 		break;
+ 	}
+ 
+-	if (seat->pointer_selection.has_selection) {
++	if (seat->pointer_selection.has_selection || seat->state->loupe) {
+ 		seat_set_outputs_dirty(seat);
+ 	}
+ }
+@@ -719,6 +776,7 @@ static const char usage[] =
+ 	"  -F s         Set the font family for the dimensions.\n"
+ 	"  -w n         Set border weight.\n"
+ 	"  -D n         Draw the selection border dashed, n px dashes (0 = solid).\n"
++	"  -Z file      Show a magnifier at the cursor, from a PPM screenshot of the layout.\n"
+ 	"  -f s         Set output format.\n"
+ 	"  -o           Select a display output.\n"
+ 	"  -p           Select a single point.\n"
+@@ -903,7 +961,7 @@ int main(int argc, char *argv[]) {
+ 	char *format = "%x,%y %wx%h\n";
+ 	bool output_boxes = false;
+ 	int w, h;
+-	while ((opt = getopt(argc, argv, "hdb:c:s:B:w:D:proa:f:F:")) != -1) {
++	while ((opt = getopt(argc, argv, "hdb:c:s:B:w:D:Z:proa:f:F:")) != -1) {
+ 		switch (opt) {
+ 		case 'h':
+ 			printf("%s", usage);
+@@ -926,6 +984,13 @@ int main(int argc, char *argv[]) {
+ 		case 'f':
+ 			format = optarg;
+ 			break;
++		case 'Z':
++			state.loupe = load_ppm(optarg);
++			if (state.loupe == NULL) {
++				fprintf(stderr, "Error: could not load PPM image for -Z: %s\n", optarg);
++				exit(EXIT_FAILURE);
++			}
++			break;
+ 		case 'F':
+ 			state.font_family = optarg;
+ 			break;
+@@ -1122,6 +1187,9 @@ int main(int argc, char *argv[]) {
+ 	wl_registry_destroy(state.registry);
+ 	xkb_context_unref(state.xkb_context);
+ 	wl_display_disconnect(state.display);
++	if (state.loupe) {
++		cairo_surface_destroy(state.loupe);
++	}
+ 
+ 	struct slurp_box *box, *box_tmp;
+ 	wl_list_for_each_safe(box, box_tmp, &state.boxes, link) {
+diff --git a/render.c b/render.c
+index 18acb56..fc74f2f 100644
+--- a/render.c
++++ b/render.c
+@@ -1,5 +1,6 @@
+ #include <cairo/cairo.h>
+ #include <stdio.h>
++#include <stdint.h>
+ #include <stdlib.h>
+ 
+ #include "pool-buffer.h"
+@@ -19,6 +20,86 @@ static void draw_rect(cairo_t *cairo, struct slurp_box *box, uint32_t color) {
+ 			box->width, box->height);
+ }
+ 
++#define LOUPE_PIXELS 15 // odd, so there is a centre pixel
++#define LOUPE_ZOOM 8
++#define LOUPE_GAP 24
++
++// ShareX-style magnifier next to the cursor (x, y in layout coordinates). The -Z image is a
++// screenshot of the whole layout, whose top-left corner is the smallest output origin.
++static void draw_loupe(cairo_t *cairo, struct slurp_state *state,
++		struct slurp_output *output, int32_t x, int32_t y) {
++	int32_t ox = INT32_MAX, oy = INT32_MAX;
++	struct slurp_output *o;
++	wl_list_for_each(o, &state->outputs, link) {
++		if (o->logical_geometry.x < ox) {
++			ox = o->logical_geometry.x;
++		}
++		if (o->logical_geometry.y < oy) {
++			oy = o->logical_geometry.y;
++		}
++	}
++	const int half = LOUPE_PIXELS / 2, size = LOUPE_PIXELS * LOUPE_ZOOM, label = 22;
++	struct slurp_box *g = &output->logical_geometry;
++	double cx = x - g->x, cy = y - g->y;
++	double lx = cx + LOUPE_GAP, ly = cy + LOUPE_GAP;
++	if (lx + size > g->width) {
++		lx = cx - LOUPE_GAP - size;
++	}
++	if (ly + size + label > g->height) {
++		ly = cy - LOUPE_GAP - size - label;
++	}
++
++	cairo_save(cairo);
++	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
++	cairo_rectangle(cairo, lx, ly, size, size);
++	cairo_clip(cairo);
++	set_source_u32(cairo, 0x000000FF); // outside the image (screen edge)
++	cairo_paint(cairo);
++	cairo_translate(cairo, lx, ly);
++	cairo_scale(cairo, LOUPE_ZOOM, LOUPE_ZOOM);
++	cairo_set_source_surface(cairo, state->loupe,
++		-(x - ox - half), -(y - oy - half));
++	cairo_pattern_set_filter(cairo_get_source(cairo), CAIRO_FILTER_NEAREST);
++	cairo_paint(cairo);
++	cairo_restore(cairo);
++
++	cairo_save(cairo);
++	cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
++	// Crosshair through the centre pixel, which itself gets a black/white outline.
++	double c0 = half * LOUPE_ZOOM;
++	set_source_u32(cairo, (state->colors.border & 0xFFFFFF00) | 0x60);
++	cairo_rectangle(cairo, lx, ly + c0, c0, LOUPE_ZOOM);
++	cairo_rectangle(cairo, lx + c0 + LOUPE_ZOOM, ly + c0, c0, LOUPE_ZOOM);
++	cairo_rectangle(cairo, lx + c0, ly, LOUPE_ZOOM, c0);
++	cairo_rectangle(cairo, lx + c0, ly + c0 + LOUPE_ZOOM, LOUPE_ZOOM, c0);
++	cairo_fill(cairo);
++	cairo_set_line_width(cairo, 1);
++	set_source_u32(cairo, 0x000000FF);
++	cairo_rectangle(cairo, lx + c0 - 0.5, ly + c0 - 0.5, LOUPE_ZOOM + 1, LOUPE_ZOOM + 1);
++	cairo_stroke(cairo);
++	set_source_u32(cairo, 0xFFFFFFFF);
++	cairo_rectangle(cairo, lx + c0 + 0.5, ly + c0 + 0.5, LOUPE_ZOOM - 1, LOUPE_ZOOM - 1);
++	cairo_stroke(cairo);
++	// Frame
++	cairo_set_line_width(cairo, 2);
++	set_source_u32(cairo, state->colors.border);
++	cairo_rectangle(cairo, lx - 1, ly - 1, size + 2, size + 2);
++	cairo_stroke(cairo);
++	// Position below the loupe
++	char text[32];
++	snprintf(text, sizeof(text), "X: %d  Y: %d", x, y);
++	set_source_u32(cairo, 0x000000C0);
++	cairo_rectangle(cairo, lx - 2, ly + size + 2, size + 4, label - 2);
++	cairo_fill(cairo);
++	cairo_select_font_face(cairo, state->font_family,
++		CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
++	cairo_set_font_size(cairo, 12);
++	set_source_u32(cairo, 0xFFFFFFFF);
++	cairo_move_to(cairo, lx + 4, ly + size + label - 6);
++	cairo_show_text(cairo, text);
++	cairo_restore(cairo);
++}
++
+ static void box_layout_to_output(struct slurp_box *box, struct slurp_output *output) {
+ 	box->x -= output->logical_geometry.x;
+ 	box->y -= output->logical_geometry.y;
+@@ -93,4 +174,13 @@ void render(struct slurp_output *output) {
+ 			cairo_show_text(cairo, dimensions);
+ 		}
+ 	}
++
++	if (state->loupe) {
++		wl_list_for_each(seat, &state->seats, link) {
++			struct slurp_selection *pointer = &seat->pointer_selection;
++			if (pointer->current_output == output) {
++				draw_loupe(cairo, state, output, pointer->x, pointer->y);
++			}
++		}
++	}
+ }
