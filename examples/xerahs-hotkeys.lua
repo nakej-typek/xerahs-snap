@@ -12,6 +12,17 @@ end
 -- the screenshot grim takes right after; the freeze (hyprpicker) should not fade either.
 hl.layer_rule({ name = "xerahs-capture-no-anim", match = { namespace = "^(selection|hyprpicker)$" }, no_anim = true })
 
+-- A layer mapped under a still cursor gets no pointer enter, so a click right after Alt+S without
+-- moving the mouse selected nothing: warp the cursor to where it already is once the layer opens.
+local warpOnOpen = { selection = true, omasnap = true, ["omasnap-outside"] = true }
+hl.on("layer.opened", function(layer)
+  if not warpOnOpen[layer.namespace] then return end
+  hl.timer(function()
+    local pos = hl.get_cursor_pos()
+    if pos then hl.dispatch(hl.dsp.cursor.move({ x = pos.x, y = pos.y })) end
+  end, { timeout = 30, type = "oneshot" })
+end)
+
 -- Classic hyprland.conf equivalent (one line per hotkey):
 --   bind = ALT, code:39, exec, true
 --   layerrule = noanim, ^(selection|hyprpicker)$
